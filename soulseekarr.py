@@ -636,6 +636,13 @@ class AlbumSearch:
             except IndexError:
                 logger.warning(f'Empty directory response for "{username}\\{file_dir}"')
                 directory = {"files": []}
+            except HTTPError as ex:
+                status = ex.response.status_code if ex.response is not None else "unknown"
+                logger.warning(
+                    f'Failed to read directory "{username}\\{file_dir}" from SLSKD '
+                    f"(HTTP {status}); skipping source"
+                )
+                return None
             except Exception:
                 logger.warning(
                     f'Failed to read directory "{username}\\{file_dir}"',
