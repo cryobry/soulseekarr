@@ -402,23 +402,25 @@ class AlbumSearch:
             logger.exception(f"Failed to start search via SLSKD: {query}")
             return False
 
-    def search_finished(self, state: dict | None = None) -> bool:
-        """Return whether the search is complete, stopping overdue active searches."""
+    def search_finished(self, state: dict | None = None) -> Literal["complete", "pending", "missing"]:
+        """Return the search status, distinguishing a confirmed disappeared search."""
         if self.id is None:
-            return True
+            return "complete"
 
         if state is None:
             try:
                 state = slskd.searches.state(self.id, False)
+            except HTTPError as ex:
+                if ex.response is not None and ex.response.status_code == 404:
+                    return "missing"
+                logger.exception(f"Failed to check SLSKD search for {self.artist} - {self.title}")
+                return "pending"
             except Exception:
                 logger.exception(f"Failed to check SLSKD search for {self.artist} - {self.title}")
-                return False
+                return "pending"
 
         if state.get("isComplete"):
-            return True
-
-        if state.get("state") != "InProgress":
-            return False
+            return "complete"
 
         now = time.monotonic()
         if now >= self.deadline:
@@ -433,7 +435,7 @@ class AlbumSearch:
                 logger.warning(f"Failed to stop SLSKD search {self.id}", exc_info=True)
             self.deadline = now + 5
 
-        return False
+        return "pending"
 
     def collect_search(self) -> bool:
         """Collect this search's results, cache them, and remove the search."""
@@ -993,6 +995,7 @@ class WantedQueue(list[WantedAlbum]):
         remaining = deque(self)
         pending: list[AlbumSearch] = []
         downloads = DownloadBatch()
+        disappeared_ids: set[str] = set()
 
         def fill_search_slots() -> None:
             while remaining and len(pending) < self.SEARCH_SLOTS:
@@ -1013,10 +1016,23 @@ class WantedQueue(list[WantedAlbum]):
 
             completed = []
             for search in pending.copy():
-                if not search.search_finished(states.get(search.id)):
+                result = search.search_finished(states.get(search.id))
+                if result == "pending":
                     continue
 
                 pending.remove(search)
+                if result == "missing":
+                    search_id = search.id
+                    if search_id not in disappeared_ids:
+                        disappeared_ids.add(search_id)
+                        search.id = None
+                        search.deadline = 0.0
+                        remaining.append(search.album)
+                        logger.warning(
+                            f"SLSKD search disappeared for {search.artist} - {search.title}; starting a new search"
+                        )
+                    continue
+
                 if search.collect_search():
                     completed.append(search)
 
