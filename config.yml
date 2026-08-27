@@ -158,7 +158,7 @@ logging:
   format: "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s"
   datefmt: "%Y-%m-%dT%H:%M:%S%z"
   # Enable logging to a file in addition to stdout
-  log_to_file: True
+  log_to_file: False
   # Log filename (resolved relative to the data directory)
   log_file: soulseekarr.log
   # Maximum log file size in bytes before rotation (default: 1MB)
