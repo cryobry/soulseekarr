@@ -8,8 +8,8 @@ additional modules unless the user explicitly asks for it.
 
 - `LidarrConfig` / `SlskdConfig` / `AppConfig` (dataclasses) model `config.yml`. `AppConfig.from_yaml`
   merges the top-level `lidarr`/`slskd` defaults with an optional per-`source` override block
-  (top-level `missing`/`cutoff_unmet` keys); `shuffle_all` is a global top-level Lidarr setting
-  and is not source-specific. `main()` builds one `source_configs[source]` entry per configured
+  (top-level `missing`/`cutoff_unmet` keys); `search_type: shuffle_all` shuffles the combined
+  deduplicated wanted list and is not source-specific. `main()` builds one `source_configs[source]` entry per configured
   source, and each `WantedAlbum`'s `cfg` field is bound to that source's `AppConfig` once, in
   `__post_init__`, at construction time.
 - Every `lidarr.*`/`slskd.*` config value can also be overridden by an env var named

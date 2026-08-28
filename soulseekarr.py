@@ -128,7 +128,6 @@ class LidarrConfig:
     disable_sync: bool
     sources: list[AlbumSource]
     search_type: str
-    shuffle_all: bool
     chunk_size: int
     sort_key: str
     sort_dir: str
@@ -199,7 +198,7 @@ class AppConfig:
         if invalid_sources:
             raise ValueError(f"LIDARR_SOURCES contains unsupported values: {invalid_sources}")
         search_type = str(setting("lidarr", "search_type", "incrementing")).lower().strip()
-        if search_type not in ("incrementing", "shuffle"):
+        if search_type not in ("incrementing", "shuffle", "shuffle_all"):
             raise ValueError(f"[lidarr.search_type] - {search_type = } is not valid")
         lidarr = LidarrConfig(
             api_key=setting("lidarr", "api_key"),
@@ -210,7 +209,6 @@ class AppConfig:
             disable_sync=bool(setting("lidarr", "disable_sync", False)),
             sources=sources,
             search_type=search_type,
-            shuffle_all=bool(env_override("lidarr", "shuffle_all", lidarr_cfg.get("shuffle_all", False))),
             chunk_size=int(setting("lidarr", "chunk_size", 10)),
             sort_key=str(setting("lidarr", "sort_key", "albums.title")).strip(),
             sort_dir=str(setting("lidarr", "sort_dir", "ascending")).strip().lower(),
@@ -931,8 +929,8 @@ class WantedQueue(list[WantedAlbum]):
             wanted_kwargs = {
                 "missing": cfg.source == "missing",
                 "page_size": 250,
-                "sort_key": "id" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_key,
-                "sort_dir": "ascending" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_dir,
+                "sort_key": "id" if cfg.lidarr.search_type in ("shuffle", "shuffle_all") else cfg.lidarr.sort_key,
+                "sort_dir": "ascending" if cfg.lidarr.search_type in ("shuffle", "shuffle_all") else cfg.lidarr.sort_dir,
             }
             try:
                 wanted_page = lidarr.get_wanted(page=1, **wanted_kwargs)
@@ -960,7 +958,7 @@ class WantedQueue(list[WantedAlbum]):
 
             self[:] = [WantedAlbum.prune_wanted_record(raw, cfg) for raw in raw_albums]
 
-            if cfg.lidarr.search_type == "shuffle" and not cfg.lidarr.shuffle_all:
+            if cfg.lidarr.search_type == "shuffle":
                 logger.info(f"search_type: shuffle (shuffling '{cfg.source}' albums)")
                 self.shuffle()
 
@@ -1844,8 +1842,8 @@ def main():
 
             logger.info(f"Total wanted albums to process: {len(wanted_albums)}")
 
-            if cfg.lidarr.shuffle_all:
-                logger.info("shuffle_all: True (shuffling all wanted albums before processing)")
+            if cfg.lidarr.search_type == "shuffle_all":
+                logger.info("search_type: shuffle_all (shuffling all wanted albums before processing)")
                 wanted_albums.shuffle()
 
             try:
