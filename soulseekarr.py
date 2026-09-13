@@ -357,7 +357,7 @@ class AlbumSearch:
     def cfg(self) -> AppConfig:
         return self.album.cfg
 
-    def start_search(self) -> bool:
+    def start_search(self) -> Literal["started", "skipped", "unavailable"]:
         """Start this album's slskd search without waiting for results."""
         self.album.failure = None
         self.id = None
@@ -376,7 +376,7 @@ class AlbumSearch:
         if not query:
             logger.warning(f"Skipping {self.artist} - {self.title}: empty search query")
             self.album.failure = "Search failed"
-            return False
+            return "skipped"
 
         logger.info(f"Searching for '{self.cfg.source}' album: {self.artist} - {self.title}")
         logger.debug(f"Search query: '{query}'")
@@ -393,12 +393,11 @@ class AlbumSearch:
                 minimumPeerUploadSpeed=self.cfg.slskd.minimum_peer_upload_speed,
             )
             self.id = search["id"]
-            return True
+            return "started"
 
         except Exception:
-            self.album.failure = "Search failed"
             logger.exception(f"Failed to start search via SLSKD: {query}")
-            return False
+            return "unavailable"
 
     def search_finished(self, state: dict | None = None) -> Literal["complete", "pending", "missing"]:
         """Return the search status, distinguishing a confirmed disappeared search."""
@@ -995,14 +994,20 @@ class WantedQueue(list[WantedAlbum]):
         downloads = DownloadBatch()
         disappeared_ids: set[str] = set()
 
-        def fill_search_slots() -> None:
+        def fill_search_slots() -> bool:
             while remaining and len(pending) < self.SEARCH_SLOTS:
                 album = remaining.popleft()
                 search = AlbumSearch(album)
-                if search.start_search():
+                result = search.start_search()
+                if result == "started":
                     pending.append(search)
+                elif result == "unavailable":
+                    remaining.appendleft(album)
+                    return False
+            return True
 
-        fill_search_slots()
+        if not fill_search_slots():
+            return downloads
 
         while pending:
             try:
@@ -1035,7 +1040,8 @@ class WantedQueue(list[WantedAlbum]):
                     completed.append(search)
 
             # Refill freed slskd slots before potentially expensive matching and enqueueing.
-            fill_search_slots()
+            if not fill_search_slots():
+                return downloads
 
             for search in completed:
                 download = search.queue_download()
