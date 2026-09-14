@@ -357,7 +357,7 @@ class AlbumSearch:
     def cfg(self) -> AppConfig:
         return self.album.cfg
 
-    def start_search(self) -> Literal["started", "skipped", "unavailable"]:
+    def start_search(self) -> Literal["started", "skipped", "retry", "unavailable"]:
         """Start this album's slskd search without waiting for results."""
         self.album.failure = None
         self.id = None
@@ -395,6 +395,12 @@ class AlbumSearch:
             self.id = search["id"]
             return "started"
 
+        except HTTPError as ex:
+            if ex.response is not None and ex.response.status_code == 409:
+                logger.warning("SLSKD rejected the search; waiting for its Soulseek connection before retrying")
+                return "retry"
+            logger.exception(f"Failed to start search via SLSKD: {query}")
+            return "unavailable"
         except Exception:
             logger.exception(f"Failed to start search via SLSKD: {query}")
             return "unavailable"
@@ -890,6 +896,7 @@ class WantedQueue(list[WantedAlbum]):
     """A backlog or processing batch of wanted albums."""
 
     SEARCH_SLOTS = 2
+    CONNECTION_CHECK_DELAY = 10
 
     def take(self, count: int) -> Self:
         """Remove and return the first `count` albums."""
@@ -987,6 +994,19 @@ class WantedQueue(list[WantedAlbum]):
 
         return len(failures)
 
+    def wait_for_slskd_connection(self) -> None:
+        """Wait until slskd reports it is connected and logged in to Soulseek."""
+        while True:
+            time.sleep(self.CONNECTION_CHECK_DELAY)
+            try:
+                server = slskd.application.state().get("server", {})
+                if server.get("isConnected") and server.get("isLoggedIn"):
+                    logger.info("SLSKD is connected to Soulseek; retrying search")
+                    return
+                logger.warning("SLSKD is not connected to Soulseek; waiting to retry search")
+            except Exception:
+                logger.warning("Failed to check SLSKD connection; waiting to retry search", exc_info=True)
+
     def search_and_queue(self) -> DownloadBatch:
         """Keep two slskd searches pending and enqueue completed results."""
         remaining = deque(self)
@@ -994,19 +1014,23 @@ class WantedQueue(list[WantedAlbum]):
         downloads = DownloadBatch()
         disappeared_ids: set[str] = set()
 
-        def fill_search_slots() -> bool:
+        def fill_search_slots() -> Literal["ready", "retry", "unavailable"]:
             while remaining and len(pending) < self.SEARCH_SLOTS:
                 album = remaining.popleft()
                 search = AlbumSearch(album)
                 result = search.start_search()
                 if result == "started":
                     pending.append(search)
-                elif result == "unavailable":
+                elif result in ("retry", "unavailable"):
                     remaining.appendleft(album)
-                    return False
-            return True
+                    return result
+            return "ready"
 
-        if not fill_search_slots():
+        slot_status = fill_search_slots()
+        while slot_status == "retry":
+            self.wait_for_slskd_connection()
+            slot_status = fill_search_slots()
+        if slot_status == "unavailable":
             return downloads
 
         while pending:
@@ -1040,7 +1064,11 @@ class WantedQueue(list[WantedAlbum]):
                     completed.append(search)
 
             # Refill freed slskd slots before potentially expensive matching and enqueueing.
-            if not fill_search_slots():
+            slot_status = fill_search_slots()
+            while slot_status == "retry":
+                self.wait_for_slskd_connection()
+                slot_status = fill_search_slots()
+            if slot_status == "unavailable":
                 return downloads
 
             for search in completed:
