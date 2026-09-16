@@ -436,7 +436,7 @@ class AlbumSearch:
                     logger.warning(f"SLSKD did not stop search {self.id}")
             except Exception:
                 logger.warning(f"Failed to stop SLSKD search {self.id}", exc_info=True)
-            self.deadline = now + 5
+            return "complete"
 
         return "pending"
 
