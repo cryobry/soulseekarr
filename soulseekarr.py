@@ -341,6 +341,7 @@ class AlbumSearch:
     album: WantedAlbum
     id: str | None = None
     deadline: float = 0.0
+    stopped: bool = False
     results: dict = field(default_factory=dict)
     folder_cache: dict = field(default_factory=dict)
     match_cache: dict = field(default_factory=dict)
@@ -361,6 +362,7 @@ class AlbumSearch:
         """Start this album's slskd search without waiting for results."""
         self.album.failure = None
         self.id = None
+        self.stopped = False
 
         include_artist = len(self.title) == 1 or self.cfg.slskd.album_prepend_artist
         query = f"{self.artist} {self.title}" if include_artist else self.title
@@ -427,6 +429,9 @@ class AlbumSearch:
 
         now = time.monotonic()
         if now >= self.deadline:
+            if self.stopped:
+                logger.warning(f"SLSKD search for {self.artist} - {self.title} did not finish after being stopped")
+                return "complete"
             logger.warning(
                 f"SLSKD search for {self.artist} - {self.title} did not complete "
                 f"within its {self.cfg.slskd.search_timeout}s timeout + 5s grace; stopping it"
@@ -436,7 +441,9 @@ class AlbumSearch:
                     logger.warning(f"SLSKD did not stop search {self.id}")
             except Exception:
                 logger.warning(f"Failed to stop SLSKD search {self.id}", exc_info=True)
-            return "complete"
+            # slskd only exposes responses once the stopped search finalizes.
+            self.stopped = True
+            self.deadline = now + 10
 
         return "pending"
 
@@ -503,6 +510,9 @@ class AlbumSearch:
         """Discover and rank complete candidates without starting downloads."""
         results = self.results
         releases = self.ordered_releases(lidarr.get_album(self.album.id)["releases"])
+        if not releases:
+            logger.info(f"No eligible Lidarr releases for {self.artist} - {self.title} (check accepted countries/formats)")
+            return []
         tracks_by_release = {}
         candidates = {}
 
