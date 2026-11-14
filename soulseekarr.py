@@ -9,6 +9,7 @@ import sys
 import time
 import shutil
 import logging
+import json
 import fcntl
 import unicodedata
 from urllib.parse import urljoin
@@ -605,8 +606,12 @@ class AlbumSearch:
 
     def _discover_sources(self, tracks, results, filetype, disk_no=None, disk_count=None):
         sources = []
+        blocked = failed_import_record()[1]
         for username, user_results in results.items():
             for peer in user_results.get(filetype, []):
+                if _release_key(username, peer["file_dir"]) in blocked:
+                    logger.debug(f"Skipping a release that already failed import: {username}")
+                    continue
                 logger.debug(f"Parsing result from user: {username}")
                 match = self.match_directory(tracks, filetype, peer["file_dir"], username)
                 if not match:
@@ -1582,6 +1587,10 @@ class AlbumDownload:
 
         self.album.failure = "Lidarr import failed"
         try:
+            remember_failed_import(self.album, self.candidate)
+        except Exception:
+            logger.exception("Error recording the failed import")
+        try:
             self.move_failed_import(path)
         except Exception:
             logger.exception("Error moving failed Lidarr import")
@@ -1624,6 +1633,73 @@ class DownloadBatch(list[AlbumDownload]):
                     break
             else:
                 time.sleep(5)
+
+
+_FAILED_IMPORT_RECORD: dict[str, tuple[dict, frozenset[str]]] = {}
+
+
+def _failed_import_record_path() -> str:
+    """Where the failed-import record is kept: the app's data dir, never the download dir."""
+    data_dir = os.environ.get("SOULSEEKARR_DATA_DIR") or ("/data" if is_docker() else os.getcwd())
+    return os.path.join(data_dir, "failed_imports.json")
+
+
+def _release_key(username: str, file_dir: str) -> str:
+    """One release: the peer and its folder, the same pair _discover_sources() builds sources from."""
+    return f"{username}\\{file_dir}"
+
+
+def _read_failed_import_record() -> tuple[dict[str, dict], frozenset[str]]:
+    """Parse the record from disk. Never cached: a writer must see what is really there."""
+    path = _failed_import_record_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}, frozenset()
+    except (OSError, ValueError):
+        logger.warning("Could not read the failed-import record at %s", path, exc_info=True)
+        return {}, frozenset()
+    albums = {str(key): value for key, value in (data.get("albums") or {}).items()}
+    return albums, frozenset(data.get("releases") or [])
+
+
+def failed_import_record() -> tuple[dict[str, dict], frozenset[str]]:
+    """The record, read once per process."""
+    path = _failed_import_record_path()
+    cached = _FAILED_IMPORT_RECORD.get(path)
+    if cached is None:
+        cached = _read_failed_import_record()
+        _FAILED_IMPORT_RECORD[path] = cached
+    return cached
+
+
+def remember_failed_import(album, candidate) -> None:
+    """Persist an album and the exact release(s) Lidarr refused, so a restart cannot re-download them."""
+    path = _failed_import_record_path()
+    albums, releases = _read_failed_import_record()
+    albums = dict(albums)
+    albums[str(album.id)] = {
+        "artist": album.artist,
+        "title": album.title,
+        "failed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    keys = {
+        _release_key(source.username, source.file_dir)
+        for source in (getattr(candidate, "sources", None) or [])
+    }
+    merged = sorted(set(releases) | keys)
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump({"albums": albums, "releases": merged}, fh, indent=2, sort_keys=True)
+        os.replace(tmp_path, path)
+    except OSError:
+        logger.warning("Could not write the failed-import record at %s", path, exc_info=True)
+        return
+    _FAILED_IMPORT_RECORD[path] = (albums, frozenset(merged))
+    logger.info(f"Remembered failed import: {album.artist} - {album.title} ({len(keys)} release(s))")
 
 
 def sanitize_folder_name(folder_name):
